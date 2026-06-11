@@ -40,6 +40,7 @@ export default function Home() {
   const [error,    setError]    = useState('');
   const [success,  setSuccess]  = useState('');
   const [modal,    setModal]    = useState(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const fetchArticles = useCallback(async () => {
     try {
@@ -120,23 +121,40 @@ export default function Home() {
       </Head>
 
       <div className="root">
+        {/* ── Mobile Header ── */}
+        <div className="mobile-header">
+          <button className="hamburger" onClick={()=>setMenuOpen(!menuOpen)} aria-label="Toggle menu">
+            <span className={`hamburger-line${menuOpen?' open':''}`}/>
+            <span className={`hamburger-line${menuOpen?' open':''}`}/>
+            <span className={`hamburger-line${menuOpen?' open':''}`}/>
+          </button>
+          <div className="mobile-logo">
+            <div className="logo-icon">PR</div>
+            <span className="logo-text">Tracker</span>
+          </div>
+          <div style={{width:'32px'}}/>
+        </div>
+
+        {/* ── Sidebar Overlay ── */}
+        {menuOpen && <div className="sidebar-overlay" onClick={()=>setMenuOpen(false)}/>}
+
         {/* ── Sidebar ── */}
-        <aside className="sidebar">
+        <aside className={`sidebar${menuOpen?' open':''}`}>
           <div className="logo">
             <div className="logo-icon">PR</div>
             <span className="logo-text">Tracker</span>
           </div>
           <nav className="nav">
-            <a className="nav-item active" href="#">
+            <a className="nav-item active" href="#" onClick={()=>setMenuOpen(false)}>
               <span className="nav-icon">▦</span> Dashboard
             </a>
-            <a className="nav-item" href="#" onClick={e=>e.preventDefault()}>
+            <a className="nav-item" href="#" onClick={e=>{e.preventDefault();setMenuOpen(false);}}>
               <span className="nav-icon">◈</span> Articles
             </a>
-            <a className="nav-item" href="#" onClick={e=>e.preventDefault()}>
+            <a className="nav-item" href="#" onClick={e=>{e.preventDefault();setMenuOpen(false);}}>
               <span className="nav-icon">◎</span> Analytics
             </a>
-            <a className="nav-item" href="#" onClick={e=>e.preventDefault()}>
+            <a className="nav-item" href="#" onClick={e=>{e.preventDefault();setMenuOpen(false);}}>
               <span className="nav-icon">⊕</span> Settings
             </a>
           </nav>

@@ -118,3 +118,139 @@ a { text-decoration: none; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }
+
+/* ── Mobile Header ── */
+.mobile-header { display: none; }
+
+/* ── Sidebar Overlay ── */
+.sidebar-overlay { display: none; }
+
+/* ── Responsive ── */
+@media (max-width: 1024px) {
+  .metrics { grid-template-columns: repeat(2, 1fr); }
+  .main { padding: 24px 20px; }
+  .summary-td { max-width: 180px; }
+  .action-td { max-width: 150px; }
+}
+
+@media (max-width: 768px) {
+  /* Mobile Header */
+  .mobile-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: linear-gradient(180deg, #0f0f1a 0%, #0a0a12 100%);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .mobile-logo { display: flex; align-items: center; gap: 8px; }
+
+  /* Hamburger */
+  .hamburger {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    z-index: 1001;
+  }
+  .hamburger-line {
+    display: block;
+    width: 22px;
+    height: 2px;
+    background: #94a3b8;
+    border-radius: 2px;
+    transition: all .3s ease;
+  }
+  .hamburger-line.open:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  .hamburger-line.open:nth-child(2) { opacity: 0; }
+  .hamburger-line.open:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  /* Sidebar Overlay */
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(4px);
+    z-index: 998;
+  }
+
+  /* Sidebar */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    width: 260px;
+    z-index: 999;
+    transform: translateX(-100%);
+    transition: transform .3s ease;
+  }
+  .sidebar.open { transform: translateX(0); }
+
+  /* Root */
+  .root { flex-direction: column; }
+
+  /* Main */
+  .main { padding: 16px; }
+
+  /* Topbar */
+  .topbar { flex-direction: column; gap: 12px; }
+  .page-title { font-size: 18px; }
+  .export-btn { align-self: flex-start; }
+
+  /* Metrics */
+  .metrics { grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 16px; }
+  .metric-card { padding: 14px; gap: 10px; }
+  .metric-icon-wrap { width: 36px; height: 36px; border-radius: 10px; }
+  .metric-value { font-size: 20px; }
+  .metric-label { font-size: 10px; }
+
+  /* Analyze Card */
+  .analyze-card { padding: 16px; margin-bottom: 16px; }
+  .analyze-header { flex-direction: column; align-items: flex-start; gap: 6px; margin-bottom: 12px; }
+  .input-row { flex-direction: column; gap: 8px; }
+  .analyze-btn { width: 100%; justify-content: center; padding: 14px; }
+
+  /* Filter + Table */
+  .table-header { flex-direction: column; gap: 10px; align-items: flex-start; padding: 12px 14px; }
+  .filter-group { gap: 4px; }
+  .filter-btn { padding: 5px 10px; font-size: 11px; }
+
+  /* Table cards on mobile */
+  .table { font-size: 12px; }
+  .th { padding: 10px 12px; font-size: 9px; }
+  .td { padding: 10px 12px; }
+  .summary-td { max-width: 140px; }
+  .action-td { max-width: 120px; }
+  .pub-link { font-size: 12px; }
+  .pub-avatar { width: 22px; height: 22px; font-size: 10px; }
+
+  /* Empty state */
+  .empty-state { padding: 40px 16px; }
+
+  /* Modal */
+  .modal-overlay { padding: 16px; }
+  .modal-box { max-width: 100%; }
+}
+
+@media (max-width: 480px) {
+  .metrics { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .metric-card { padding: 12px; gap: 8px; }
+  .metric-icon-wrap { width: 32px; height: 32px; border-radius: 8px; }
+  .metric-icon { font-size: 14px; }
+  .metric-value { font-size: 18px; }
+  .metric-label { font-size: 9px; margin-top: 3px; }
+  .page-title { font-size: 16px; }
+  .page-sub { font-size: 12px; }
+  .analyze-title { font-size: 13px; }
+  .analyze-hint { font-size: 11px; }
+  .url-input { font-size: 12px; padding: 11px 14px 11px 34px; }
+  .analyze-btn { font-size: 12px; }
+}
