@@ -46,7 +46,10 @@ export default function Home() {
     try {
       const res  = await fetch(N8N_GET);
       const data = await res.json();
-      setArticles(data.articles || []);
+      const valid = (data.articles || []).filter(a =>
+        a.url && a.publication && a.publication !== 'Unknown' && a.publication.trim() !== ''
+      );
+      setArticles(valid);
     } catch (e) { console.error(e); }
     finally { setFetching(false); }
   }, []);
