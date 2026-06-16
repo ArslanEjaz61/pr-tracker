@@ -2,6 +2,8 @@
 // Searches Google News RSS (free & unlimited) first, then falls back to Serper API.
 // Sends each found URL to n8n for AI analysis & MongoDB storage.
 
+export const maxDuration = 300; // Allow up to 5 minutes on Vercel Pro (60s on Hobby)
+
 const SERPER_API_KEY = process.env.SERPER_API_KEY;
 const N8N_ANALYZE   = process.env.NEXT_PUBLIC_N8N_ANALYZE;
 
@@ -403,7 +405,7 @@ async function analyzeUrl(url, query) {
 /**
  * Analyze URLs in batches to avoid overwhelming n8n
  */
-async function analyzeInBatches(urls, batchSize = 3, query) {
+async function analyzeInBatches(urls, batchSize = 5, query) {
   const results = [];
   for (let i = 0; i < urls.length; i += batchSize) {
     const batch = urls.slice(i, i + batchSize);
@@ -412,7 +414,7 @@ async function analyzeInBatches(urls, batchSize = 3, query) {
     results.push(...batchResults);
     
     if (i + batchSize < urls.length) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, 500)); // Reduced delay
     }
   }
   return results;
@@ -546,7 +548,7 @@ export default async function handler(req, res) {
     const toAnalyze = unique.slice(0, 10);
     console.log(`[Track] Will analyze ${toAnalyze.length} URLs via n8n...`);
 
-    const analyzed = await analyzeInBatches(toAnalyze, 3, query);
+    const analyzed = await analyzeInBatches(toAnalyze, 5, query);
     const successful = analyzed.filter(a => a !== null).map(a => ({ ...a, search_query: query }));
     console.log(`[Track] Successfully analyzed: ${successful.length}/${toAnalyze.length}`);
 
