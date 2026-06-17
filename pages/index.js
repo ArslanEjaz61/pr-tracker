@@ -17,6 +17,7 @@ const TRACK_TYPES = [
   { id: 'keywords', icon: '⌖', label: 'Keywords',       placeholder: 'Enter keywords from the press release...' },
   { id: 'hashtag',  icon: '#', label: 'Hashtag',        placeholder: '#YourHashtag' },
   { id: 'document', icon: '≡', label: 'Press Release',  placeholder: 'Paste the full press release text here...' },
+  { id: 'image',    icon: '📷', label: 'Upload Image',   placeholder: 'Upload a screenshot or photo of the article...' },
 ];
 
 function TextModal({ title, text, onClose }) {
@@ -50,11 +51,66 @@ export default function Home() {
   const [modal,      setModal]      = useState(null);
   const [menuOpen,   setMenuOpen]   = useState(false);
   const [activeTab,  setActiveTab]  = useState('track');
-  const [trackType,  setTrackType]  = useState('title');
-  const [trackQuery, setTrackQuery] = useState('');
+  
+  const [selectedTypes, setSelectedTypes] = useState(['title']);
+  const [titleQuery, setTitleQuery] = useState('');
+  const [keywordsQuery, setKeywordsQuery] = useState('');
+  const [hashtagQuery, setHashtagQuery] = useState('');
+  const [documentQuery, setDocumentQuery] = useState('');
+
   const [tracking,   setTracking]   = useState(false);
   const [trackMsg,   setTrackMsg]   = useState('');
   const [expandedGroups, setExpandedGroups] = useState({});
+  const [activePage, setActivePage] = useState('dashboard');
+
+  const [imageFile,    setImageFile]    = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [ocrLoading,   setOcrLoading]   = useState(false);
+  const [ocrResult,    setOcrResult]    = useState(null);
+  const [ocrError,     setOcrError]     = useState('');
+
+  const fileInputRef = useRef(null);
+
+  const handleImageUpload = (file) => {
+    if (!file || !file.type.startsWith('image/')) {
+      setOcrError('Please upload an image file (PNG, JPG, or JPEG).');
+      return;
+    }
+    setImageFile(file);
+    setOcrError('');
+    setOcrResult(null);
+    
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64Data = e.target.result;
+      setImagePreview(base64Data);
+      setOcrLoading(true);
+      
+      try {
+        const response = await fetch('/api/ocr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: base64Data })
+        });
+        
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to scan image');
+        }
+        
+        setOcrResult({
+          title: data.title || '',
+          keywords: data.keywords || '',
+        });
+      } catch (err) {
+        console.error('OCR Error:', err);
+        setOcrError(err.message || 'Failed to process image. Make sure your API key is correct.');
+      } finally {
+        setOcrLoading(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   const toggleGroup = (group) => {
     setExpandedGroups(prev => ({ ...prev, [group]: !prev[group] }));
@@ -79,6 +135,28 @@ export default function Home() {
 
   useEffect(() => { fetchArticles(); }, [fetchArticles]);
 
+  useEffect(() => {
+    const handlePaste = (e) => {
+      if (activePage !== 'dashboard' || activeTab !== 'track' || !selectedTypes.includes('image')) return;
+      
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      
+      for (const item of items) {
+        if (item.type.indexOf('image') !== -1) {
+          const file = item.getAsFile();
+          if (file) {
+            handleImageUpload(file);
+            break;
+          }
+        }
+      }
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [activePage, activeTab, selectedTypes, handleImageUpload]);
+
   async function analyze() {
     if (!url.trim()) return;
     setLoading(true); setError(''); setSuccess('');
@@ -99,7 +177,30 @@ export default function Home() {
   }
 
   async function trackCoverage() {
-    if (!trackQuery.trim()) return;
+    const targets = [];
+    if (selectedTypes.includes('title') && titleQuery.trim()) {
+      targets.push({ type: 'title', query: titleQuery.trim() });
+    }
+    if (selectedTypes.includes('keywords') && keywordsQuery.trim()) {
+      targets.push({ type: 'keywords', query: keywordsQuery.trim() });
+    }
+    if (selectedTypes.includes('hashtag') && hashtagQuery.trim()) {
+      targets.push({ type: 'hashtag', query: hashtagQuery.trim() });
+    }
+    if (selectedTypes.includes('document') && documentQuery.trim()) {
+      targets.push({ type: 'document', query: documentQuery.trim() });
+    }
+    if (selectedTypes.includes('image') && ocrResult) {
+      if (ocrResult.title) {
+        targets.push({ type: 'title', query: ocrResult.title });
+      }
+      if (ocrResult.keywords) {
+        targets.push({ type: 'keywords', query: ocrResult.keywords });
+      }
+    }
+
+    if (targets.length === 0) return;
+
     setTracking(true); setError(''); setSuccess('');
     const msgs = [
       'Searching Google for coverage via Serper…',
@@ -116,7 +217,7 @@ export default function Home() {
       const res = await fetch('/api/track', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ searchType: trackType, query: trackQuery.trim() }),
+        body: JSON.stringify({ targets }),
       });
       clearInterval(interval);
       if (!res.ok) {
@@ -124,7 +225,16 @@ export default function Home() {
         throw new Error(errData.error || 'Tracking failed');
       }
       const data = await res.json();
-      setTrackQuery('');
+      
+      // Clear all active inputs
+      setTitleQuery('');
+      setKeywordsQuery('');
+      setHashtagQuery('');
+      setDocumentQuery('');
+      setImageFile(null);
+      setImagePreview(null);
+      setOcrResult(null);
+      setOcrError('');
       setTrackMsg('');
       
       // Directly add the analyzed articles to the dashboard
@@ -193,7 +303,7 @@ export default function Home() {
     return s+(r.toUpperCase().includes('M')?n*1e6:r.toUpperCase().includes('K')?n*1e3:n);
   },0);
   const reach = totalReach>=1e6?(totalReach/1e6).toFixed(1)+'M':totalReach>=1e3?Math.round(totalReach/1e3)+'K':totalReach>0?''+totalReach:'—';
-  const currentTrackType = TRACK_TYPES.find(t => t.id === trackType);
+  const currentTrackType = TRACK_TYPES.find(t => t.id === selectedTypes[0]) || TRACK_TYPES[0];
 
   const groupedArticles = filtered.reduce((acc, a) => {
     const group = a.search_query || 'Direct Analysis / Legacy';
@@ -235,25 +345,24 @@ export default function Home() {
             <span className="logo-text">Tracker</span>
           </div>
           <nav className="nav">
-            <a className="nav-item active" href="#" onClick={()=>setMenuOpen(false)}>
+            <a className={`nav-item ${activePage==='dashboard'?'active':''}`} href="#" onClick={(e)=>{e.preventDefault();setActivePage('dashboard');setMenuOpen(false);}}>
               <span className="nav-icon">▦</span> Dashboard
             </a>
-            <a className="nav-item" href="#" onClick={e=>{e.preventDefault();setMenuOpen(false);}}>
+            <a className={`nav-item ${activePage==='articles'?'active':''}`} href="#" onClick={(e)=>{e.preventDefault();setActivePage('articles');setMenuOpen(false);}}>
               <span className="nav-icon">◈</span> Articles
             </a>
-            <a className="nav-item" href="#" onClick={e=>{e.preventDefault();setMenuOpen(false);}}>
+            <a className={`nav-item ${activePage==='analytics'?'active':''}`} href="#" onClick={(e)=>{e.preventDefault();setActivePage('analytics');setMenuOpen(false);}}>
               <span className="nav-icon">◎</span> Analytics
             </a>
-            <a className="nav-item" href="#" onClick={e=>{e.preventDefault();setMenuOpen(false);}}>
+            <a className={`nav-item ${activePage==='settings'?'active':''}`} href="#" onClick={(e)=>{e.preventDefault();setActivePage('settings');setMenuOpen(false);}}>
               <span className="nav-icon">⊕</span> Settings
             </a>
           </nav>
           <div className="sidebar-footer">
             <div className="ai-badge">
               <span className="ai-dot"/>
-              <span>AI Powered</span>
+              <span>Morango Ai</span>
             </div>
-            <p className="sidebar-sub">n8n · OpenAI · MongoDB</p>
           </div>
         </aside>
 
@@ -261,15 +370,18 @@ export default function Home() {
         <main className="main">
           <div className="topbar">
             <div>
-              <h1 className="page-title">PR Coverage Dashboard</h1>
-              <p className="page-sub">Track, analyze and measure your media coverage with AI</p>
+              <h1 className="page-title">{activePage === 'dashboard' ? 'PR Coverage Dashboard' : activePage === 'articles' ? 'All Articles' : activePage === 'analytics' ? 'Analytics Overview' : 'Settings'}</h1>
+              <p className="page-sub">{activePage === 'dashboard' ? 'Track, analyze and measure your media coverage with AI' : activePage === 'articles' ? 'View and manage all your tracked press release coverage' : activePage === 'analytics' ? 'Deep dive into sentiment and reach metrics' : 'Configure your tracking preferences and API connections'}</p>
             </div>
-            <button className="export-btn" onClick={exportCSV} disabled={filtered.length===0}>
-              <span>↓</span> Export CSV
-            </button>
+            {activePage !== 'settings' && (
+              <button className="export-btn" onClick={exportCSV} disabled={filtered.length===0}>
+                <span>↓</span> Export CSV
+              </button>
+            )}
           </div>
 
           {/* Metrics */}
+          {(activePage === 'dashboard' || activePage === 'analytics') && (
           <div className="metrics">
             {[
               { label:'Total Articles',    value: articles.length, icon:'◈', color:'#6366f1', grad:'135deg,#6366f1,#8b5cf6' },
@@ -289,9 +401,11 @@ export default function Home() {
               </div>
             ))}
           </div>
+          )}
 
           {/* Action Card */}
-          <div className="action-card">
+          {activePage === 'dashboard' && (
+            <div className="action-card">
             <div className="tab-group">
               <button
                 className={`tab-btn${activeTab==='track'?' active':''}`}
@@ -339,46 +453,213 @@ export default function Home() {
               <div className="tab-body">
                 <p className="tab-hint">Find all publications of a press release across the web — choose how you want to search</p>
 
-                <div className="track-types">
-                  {TRACK_TYPES.map(t => (
-                    <button
-                      key={t.id}
-                      className={`track-type-btn${trackType===t.id?' active':''}`}
-                      onClick={()=>{ setTrackType(t.id); setTrackQuery(''); }}
-                      disabled={tracking}
-                    >
-                      <span className="track-icon">{t.icon}</span>
-                      {t.label}
-                    </button>
-                  ))}
+                <div className="track-types" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                  {TRACK_TYPES.map(t => {
+                    const isSelected = selectedTypes.includes(t.id);
+                    return (
+                      <button
+                        key={t.id}
+                        className={`track-type-btn${isSelected?' active':''}`}
+                        onClick={()=>{
+                          if (isSelected) {
+                            if (selectedTypes.length > 1) {
+                              setSelectedTypes(selectedTypes.filter(id => id !== t.id));
+                            }
+                          } else {
+                            setSelectedTypes([...selectedTypes, t.id]);
+                          }
+                        }}
+                        disabled={tracking}
+                        style={{
+                          border: isSelected ? '1px solid rgba(99,102,241,0.5)' : '1px solid rgba(255,255,255,0.08)',
+                          background: isSelected ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.02)',
+                        }}
+                      >
+                        <span className="track-icon" style={{ marginRight: '6px' }}>
+                          {isSelected ? '✓' : t.icon}
+                        </span>
+                        {t.label}
+                      </button>
+                    );
+                  })}
                 </div>
 
-                <div className="track-input-area">
-                  {trackType === 'document' ? (
-                    <textarea
-                      className="track-textarea"
-                      placeholder={currentTrackType.placeholder}
-                      value={trackQuery}
-                      onChange={e=>setTrackQuery(e.target.value)}
-                      disabled={tracking}
-                      rows={5}
-                    />
-                  ) : (
-                    <div className="input-row">
-                      <div className="input-wrap">
-                        <span className="input-icon" style={{fontSize:'12px'}}>{currentTrackType.icon}</span>
-                        <input
-                          className="url-input"
-                          type="text"
-                          placeholder={currentTrackType.placeholder}
-                          value={trackQuery}
-                          onChange={e=>setTrackQuery(e.target.value)}
-                          onKeyDown={e=>e.key==='Enter'&&!tracking&&trackCoverage()}
-                          disabled={tracking}
-                        />
+                <div className="track-input-area" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  
+                  {/* Title Input */}
+                  {selectedTypes.includes('title') && (
+                    <div className="ocr-field">
+                      <label className="ocr-label">Article Title</label>
+                      <div className="input-row">
+                        <div className="input-wrap">
+                          <span className="input-icon">◈</span>
+                          <input
+                            className="url-input"
+                            type="text"
+                            placeholder="Enter the exact article title or headline..."
+                            value={titleQuery}
+                            onChange={e=>setTitleQuery(e.target.value)}
+                            onKeyDown={e=>e.key==='Enter'&&!tracking&&(
+                              (selectedTypes.includes('title') && titleQuery.trim()) ||
+                              (selectedTypes.includes('keywords') && keywordsQuery.trim()) ||
+                              (selectedTypes.includes('hashtag') && hashtagQuery.trim()) ||
+                              (selectedTypes.includes('document') && documentQuery.trim()) ||
+                              (selectedTypes.includes('image') && ocrResult)
+                            )&&trackCoverage()}
+                            disabled={tracking}
+                            style={{ paddingLeft: '38px' }}
+                          />
+                        </div>
                       </div>
                     </div>
                   )}
+
+                  {/* Keywords Input */}
+                  {selectedTypes.includes('keywords') && (
+                    <div className="ocr-field">
+                      <label className="ocr-label">Keywords</label>
+                      <div className="input-row">
+                        <div className="input-wrap">
+                          <span className="input-icon">⌖</span>
+                          <input
+                            className="url-input"
+                            type="text"
+                            placeholder="Enter keywords from the press release..."
+                            value={keywordsQuery}
+                            onChange={e=>setKeywordsQuery(e.target.value)}
+                            onKeyDown={e=>e.key==='Enter'&&!tracking&&(
+                              (selectedTypes.includes('title') && titleQuery.trim()) ||
+                              (selectedTypes.includes('keywords') && keywordsQuery.trim()) ||
+                              (selectedTypes.includes('hashtag') && hashtagQuery.trim()) ||
+                              (selectedTypes.includes('document') && documentQuery.trim()) ||
+                              (selectedTypes.includes('image') && ocrResult)
+                            )&&trackCoverage()}
+                            disabled={tracking}
+                            style={{ paddingLeft: '38px' }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Hashtag Input */}
+                  {selectedTypes.includes('hashtag') && (
+                    <div className="ocr-field">
+                      <label className="ocr-label">Hashtag</label>
+                      <div className="input-row">
+                        <div className="input-wrap">
+                          <span className="input-icon">#</span>
+                          <input
+                            className="url-input"
+                            type="text"
+                            placeholder="#YourHashtag"
+                            value={hashtagQuery}
+                            onChange={e=>setHashtagQuery(e.target.value)}
+                            onKeyDown={e=>e.key==='Enter'&&!tracking&&(
+                              (selectedTypes.includes('title') && titleQuery.trim()) ||
+                              (selectedTypes.includes('keywords') && keywordsQuery.trim()) ||
+                              (selectedTypes.includes('hashtag') && hashtagQuery.trim()) ||
+                              (selectedTypes.includes('document') && documentQuery.trim()) ||
+                              (selectedTypes.includes('image') && ocrResult)
+                            )&&trackCoverage()}
+                            disabled={tracking}
+                            style={{ paddingLeft: '38px' }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Press Release Document Input */}
+                  {selectedTypes.includes('document') && (
+                    <div className="ocr-field">
+                      <label className="ocr-label">Press Release Text</label>
+                      <textarea
+                        className="track-textarea"
+                        placeholder="Paste the full press release text here..."
+                        value={documentQuery}
+                        onChange={e=>setDocumentQuery(e.target.value)}
+                        disabled={tracking}
+                        rows={4}
+                      />
+                    </div>
+                  )}
+
+                  {/* Image Upload Input */}
+                  {selectedTypes.includes('image') && (
+                    <div className="ocr-field">
+                      <label className="ocr-label">Upload Article Screenshot</label>
+                      <div className="image-preview-container">
+                        {!imagePreview ? (
+                          <div 
+                            className="upload-zone"
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files?.[0]) handleImageUpload(e.dataTransfer.files[0]); }}
+                            onClick={() => fileInputRef.current?.click()}
+                          >
+                            <input 
+                              type="file" 
+                              ref={fileInputRef} 
+                              style={{ display: 'none' }} 
+                              accept="image/*"
+                              onChange={(e) => { if (e.target.files?.[0]) handleImageUpload(e.target.files[0]); }}
+                            />
+                            <div className="upload-icon">📷</div>
+                            <p className="upload-title">Drag & drop your article image here or click to browse</p>
+                            <p className="upload-sub">Supports PNG, JPG, JPEG up to 10MB</p>
+                          </div>
+                        ) : (
+                          <div className="preview-container">
+                            <div className="preview-image-wrap">
+                              <img src={imagePreview} alt="Article upload" className="preview-image" />
+                              {!ocrLoading && (
+                                <button 
+                                  className="remove-image-btn" 
+                                  onClick={() => { 
+                                    setImageFile(null); 
+                                    setImagePreview(null); 
+                                    setOcrResult(null); 
+                                    setOcrError(''); 
+                                  }}
+                                >
+                                  ✕ Remove Image
+                                </button>
+                              )}
+                            </div>
+
+                            {ocrLoading && (
+                              <div className="ocr-loading-state">
+                                <span className="spinner large" />
+                                <p>Scanning image with AI Vision...</p>
+                                <span className="ocr-step-msg">Extracting headline & search keywords...</span>
+                              </div>
+                            )}
+
+                            {ocrError && (
+                              <div className="msg err" style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                <div><strong>Scan Failed:</strong> {ocrError}</div>
+                                <button className="retry-btn" onClick={() => handleImageUpload(imageFile)} style={{ alignSelf: 'flex-start' }}>
+                                  ↻ Retry Scan
+                                </button>
+                              </div>
+                            )}
+
+                            {ocrResult && (
+                              <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '8px 4px' }}>
+                                <h4 style={{ color: '#10b981', fontSize: '14px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span>✓</span> AI Vision Scan Complete
+                                </h4>
+                                <p style={{ color: '#64748b', fontSize: '12px', marginTop: '6px', lineHeight: '1.5' }}>
+                                  Article headline and keywords successfully extracted in the background. They will be included in the coverage search.
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                 </div>
 
                 <div className="track-footer">
@@ -391,7 +672,13 @@ export default function Home() {
                   <button
                     className={`action-btn${tracking?' loading':''}`}
                     onClick={trackCoverage}
-                    disabled={tracking || !trackQuery.trim()}
+                    disabled={tracking || !(
+                      (selectedTypes.includes('title') && titleQuery.trim()) ||
+                      (selectedTypes.includes('keywords') && keywordsQuery.trim()) ||
+                      (selectedTypes.includes('hashtag') && hashtagQuery.trim()) ||
+                      (selectedTypes.includes('document') && documentQuery.trim()) ||
+                      (selectedTypes.includes('image') && ocrResult)
+                    )}
                     style={{background:'linear-gradient(135deg,#0ea5e9,#6366f1)'}}
                   >
                     {tracking
@@ -406,9 +693,11 @@ export default function Home() {
               </div>
             )}
           </div>
+          )}
 
           {/* Table */}
-          <div className="table-section">
+          {(activePage === 'dashboard' || activePage === 'articles') && (
+            <div className="table-section">
             <div className="table-header">
               <div className="filter-group">
                 {articles.length > 0 && ['all','positive','neutral','negative'].map(f=>{
@@ -512,6 +801,78 @@ export default function Home() {
               )}
             </div>
           </div>
+          )}
+
+          {/* Analytics View */}
+          {activePage === 'analytics' && (
+            <div className="analytics-panels" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '24px', marginTop: '32px'}}>
+              <div className="panel" style={{background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '16px', padding: '24px'}}>
+                <h3 style={{color: '#fff', marginBottom: '16px', fontSize: '18px', fontWeight: '600'}}>Sentiment Distribution</h3>
+                <div style={{display: 'flex', gap: '8px', height: '30px', borderRadius: '8px', overflow: 'hidden', marginBottom: '16px'}}>
+                  {articles.length > 0 ? (
+                    <>
+                      <div style={{width: `${posPct}%`, background: SENT.positive.text, transition: 'width 1s ease'}}/>
+                      <div style={{width: `${(articles.filter(a=>a.sentiment==='neutral').length/articles.length*100)}%`, background: SENT.neutral.text, transition: 'width 1s ease'}}/>
+                      <div style={{width: `${(articles.filter(a=>a.sentiment==='negative').length/articles.length*100)}%`, background: SENT.negative.text, transition: 'width 1s ease'}}/>
+                    </>
+                  ) : <div style={{width: '100%', background: 'rgba(255,255,255,0.05)'}}/>}
+                </div>
+                <div style={{display: 'flex', gap: '16px', color: '#94a3b8', fontSize: '14px'}}>
+                  <span style={{display:'flex', alignItems:'center', gap:'6px'}}><span style={{width:'8px', height:'8px', borderRadius:'50%', background:SENT.positive.text}}></span> Positive ({posPct}%)</span>
+                  <span style={{display:'flex', alignItems:'center', gap:'6px'}}><span style={{width:'8px', height:'8px', borderRadius:'50%', background:SENT.neutral.text}}></span> Neutral ({articles.length ? Math.round(articles.filter(a=>a.sentiment==='neutral').length/articles.length*100) : 0}%)</span>
+                  <span style={{display:'flex', alignItems:'center', gap:'6px'}}><span style={{width:'8px', height:'8px', borderRadius:'50%', background:SENT.negative.text}}></span> Negative ({articles.length ? Math.round(articles.filter(a=>a.sentiment==='negative').length/articles.length*100) : 0}%)</span>
+                </div>
+              </div>
+
+              <div className="panel" style={{background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '16px', padding: '24px'}}>
+                <h3 style={{color: '#fff', marginBottom: '16px', fontSize: '18px', fontWeight: '600'}}>Top Publications</h3>
+                <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
+                  {articles.length > 0 ? [...new Set(articles.map(a=>a.publication).filter(Boolean))].slice(0, 5).map(pub => {
+                    const count = articles.filter(a=>a.publication===pub).length;
+                    return (
+                      <div key={pub} style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#cbd5e1', fontSize: '14px', padding: '8px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px'}}>
+                        <span style={{fontWeight: '500'}}>{pub}</span>
+                        <span style={{background: 'rgba(255,255,255,0.1)', color: '#fff', padding: '2px 8px', borderRadius: '12px', fontSize: '12px'}}>{count} article{count!==1?'s':''}</span>
+                      </div>
+                    )
+                  }) : <div style={{color: '#64748b', fontSize: '14px'}}>No data available yet.</div>}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Settings View */}
+          {activePage === 'settings' && (
+            <div className="settings-panel" style={{background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '16px', padding: '32px', maxWidth: '700px', marginTop: '24px'}}>
+              <h3 style={{color: '#fff', marginBottom: '8px', fontSize: '18px', fontWeight: '600'}}>System Configuration</h3>
+              <p style={{color: '#94a3b8', fontSize: '14px', marginBottom: '32px', lineHeight: '1.6'}}>These settings are loaded securely from your server environment (<code>.env.local</code>). To change them, please update your environment variables and restart the server deployment.</p>
+              
+              <div style={{display: 'flex', flexDirection: 'column', gap: '24px'}}>
+                <div>
+                  <label style={{display: 'flex', alignItems: 'center', gap: '8px', color: '#cbd5e1', fontSize: '14px', marginBottom: '8px', fontWeight: '500'}}>
+                    <span style={{color: '#3b82f6'}}>⚡</span> n8n Analyze Webhook (POST)
+                  </label>
+                  <input type="text" readOnly value={N8N_ANALYZE || 'Not configured'} style={{width: '100%', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', color: '#94a3b8', padding: '12px 16px', borderRadius: '8px', fontSize: '14px', outline: 'none'}} />
+                  <p style={{color: '#64748b', fontSize: '12px', marginTop: '6px'}}>Called automatically when the AI analyzes a new article URL.</p>
+                </div>
+                <div>
+                  <label style={{display: 'flex', alignItems: 'center', gap: '8px', color: '#cbd5e1', fontSize: '14px', marginBottom: '8px', fontWeight: '500'}}>
+                    <span style={{color: '#10b981'}}>📥</span> n8n Get Articles Webhook (GET)
+                  </label>
+                  <input type="text" readOnly value={N8N_GET || 'Not configured'} style={{width: '100%', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', color: '#94a3b8', padding: '12px 16px', borderRadius: '8px', fontSize: '14px', outline: 'none'}} />
+                  <p style={{color: '#64748b', fontSize: '12px', marginTop: '6px'}}>Called to populate the dashboard table on page load.</p>
+                </div>
+                <div>
+                  <label style={{display: 'flex', alignItems: 'center', gap: '8px', color: '#cbd5e1', fontSize: '14px', marginBottom: '8px', fontWeight: '500'}}>
+                    <span style={{color: '#ef4444'}}>🗑️</span> n8n Delete Webhook (POST)
+                  </label>
+                  <input type="text" readOnly value={N8N_DELETE || 'Not configured'} style={{width: '100%', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', color: '#94a3b8', padding: '12px 16px', borderRadius: '8px', fontSize: '14px', outline: 'none'}} />
+                  <p style={{color: '#64748b', fontSize: '12px', marginTop: '6px'}}>Called when you delete an article from the dashboard.</p>
+                </div>
+              </div>
+            </div>
+          )}
+
         </main>
       </div>
 

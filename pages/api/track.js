@@ -425,16 +425,32 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { searchType, query } = req.body;
+  const { searchType, query, targets } = req.body;
 
-  if (!query || !searchType) {
-    return res.status(400).json({ error: 'Missing searchType or query' });
+  let activeTargets = [];
+  if (targets && Array.isArray(targets)) {
+    activeTargets = targets.filter(t => t.query && t.query.trim());
+  } else if (searchType && query) {
+    activeTargets = [{ type: searchType, query }];
   }
 
+  if (activeTargets.length === 0) {
+    return res.status(400).json({ error: 'Missing searchType, query or targets' });
+  }
+
+  // Combine query titles/keywords for campaign tracking label
+  const combinedQuery = activeTargets.map(t => t.query.trim()).join(' | ');
+
   try {
-    // Step 1: Build search queries based on tracking type
-    const queries = buildSearchQueries(searchType, query);
-    console.log(`[Track] Type: ${searchType}, Queries:`, queries);
+    // Step 1: Build search queries based on tracking targets
+    let queries = [];
+    for (const target of activeTargets) {
+      const targetQueries = buildSearchQueries(target.type, target.query.trim());
+      queries.push(...targetQueries);
+    }
+    // Deduplicate query list
+    queries = [...new Set(queries)];
+    console.log(`[Track] Targets:`, activeTargets, `Queries:`, queries);
 
     // Step 2: Try Google News RSS first
     console.log('[Track] Running Google News RSS search...');
@@ -489,47 +505,55 @@ export default async function handler(req, res) {
           });
         }
       } else {
-        searchSourceUsed = 'serper-fallback';
-        let serperRawResults = [];
-        
-        for (const q of queries) {
-          const [webResults, newsResults] = await Promise.all([
-            serperSearch(q, 15),
-            serperNewsSearch(q, 15),
-          ]);
+        try {
+          searchSourceUsed = 'serper-fallback';
+          let serperRawResults = [];
           
-          console.log(`[Track] Serper Query "${q}": ${webResults.length} web + ${newsResults.length} news results`);
-          
-          for (const r of webResults) {
-            let source = '';
-            try { source = new URL(r.link).hostname.replace('www.', ''); } catch {}
-            serperRawResults.push({
-              link: r.link,
-              title: r.title || '',
-              snippet: r.snippet || '',
-              source: source,
-              date: r.date || '',
-            });
+          for (const q of queries) {
+            const [webResults, newsResults] = await Promise.all([
+              serperSearch(q, 15).catch(err => { console.error(`[Track] Serper Web error:`, err.message); return []; }),
+              serperNewsSearch(q, 15).catch(err => { console.error(`[Track] Serper News error:`, err.message); return []; }),
+            ]);
+            
+            console.log(`[Track] Serper Query "${q}": ${webResults.length} web + ${newsResults.length} news results`);
+            
+            for (const r of webResults) {
+              let source = '';
+              try { source = new URL(r.link).hostname.replace('www.', ''); } catch {}
+              serperRawResults.push({
+                link: r.link,
+                title: r.title || '',
+                snippet: r.snippet || '',
+                source: source,
+                date: r.date || '',
+              });
+            }
+            
+            for (const r of newsResults) {
+              serperRawResults.push({
+                link: r.link,
+                title: r.title || '',
+                snippet: r.snippet || '',
+                source: r.source || '',
+                date: r.date || '',
+              });
+            }
           }
           
-          for (const r of newsResults) {
-            serperRawResults.push({
-              link: r.link,
-              title: r.title || '',
-              snippet: r.snippet || '',
-              source: r.source || '',
-              date: r.date || '',
-            });
+          const filteredSerper = filterRelevantResults(serperRawResults);
+          const uniqueSerper = deduplicateResults(filteredSerper);
+          
+          // Merge Serper results with RSS results, prioritizing Serper results
+          const combined = [...uniqueSerper, ...unique];
+          unique = deduplicateResults(combined);
+          console.log(`[Track] After merging Serper fallback: ${unique.length} results.`);
+        } catch (serperErr) {
+          console.error('[Track] Serper fallback search failed:', serperErr.message);
+          // Do not fail the request if we already have some RSS results!
+          if (unique.length === 0) {
+            throw serperErr;
           }
         }
-        
-        const filteredSerper = filterRelevantResults(serperRawResults);
-        const uniqueSerper = deduplicateResults(filteredSerper);
-        
-        // Merge Serper results with RSS results, prioritizing Serper results
-        const combined = [...uniqueSerper, ...unique];
-        unique = deduplicateResults(combined);
-        console.log(`[Track] After merging Serper fallback: ${unique.length} results.`);
       }
     }
 
@@ -548,8 +572,8 @@ export default async function handler(req, res) {
     const toAnalyze = unique.slice(0, 10);
     console.log(`[Track] Will analyze ${toAnalyze.length} URLs via n8n...`);
 
-    const analyzed = await analyzeInBatches(toAnalyze, 5, query);
-    const successful = analyzed.filter(a => a !== null).map(a => ({ ...a, search_query: query }));
+    const analyzed = await analyzeInBatches(toAnalyze, 5, combinedQuery);
+    const successful = analyzed.filter(a => a !== null).map(a => ({ ...a, search_query: combinedQuery }));
     console.log(`[Track] Successfully analyzed: ${successful.length}/${toAnalyze.length}`);
 
     return res.status(200).json({
