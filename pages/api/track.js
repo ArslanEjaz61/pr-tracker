@@ -244,7 +244,53 @@ async function serperNewsSearch(query, num = 20) {
 }
 
 /**
- * Extract 3-4 unique/distinctive phrases from press release text
+ * Extract key proper nouns/entities from a document using OpenAI
+ */
+async function extractEntitiesWithAi(text) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const payload = {
+      model: 'gpt-4o-mini',
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'user',
+          content: `Analyze the following press release/text and extract the 3 most unique proper nouns (e.g. specific person names, unique brand/company names, or rare event names). Do not extract generic words like "announcement", "Pakistan", "media", or "press release". Return a JSON object:
+{
+  "entities": ["entity1", "entity2", "entity3"]
+}
+
+Text:
+${text.substring(0, 3000)}`
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 100
+    };
+
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) throw new Error(`Status ${res.status}`);
+    const data = await res.json();
+    const content = JSON.parse(data.choices?.[0]?.message?.content || '{}');
+    return content.entities || null;
+  } catch (err) {
+    console.error('[Track] AI Entity extraction failed:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Extract 3-4 unique/distinctive phrases from press release text (Fallback)
  */
 function extractKeyPhrases(text) {
   const clean = text.replace(/\s+/g, ' ').trim();
@@ -281,7 +327,7 @@ function extractKeyPhrases(text) {
 /**
  * Build search queries based on tracking type
  */
-function buildSearchQueries(searchType, query) {
+async function buildSearchQueries(searchType, query) {
   switch (searchType) {
     case 'title':
       return [
@@ -291,8 +337,8 @@ function buildSearchQueries(searchType, query) {
     
     case 'keywords':
       return [
-        `${query} press release`,
-        `${query} announcement news`,
+        `"${query}"`,
+        query,
       ];
     
     case 'hashtag': {
@@ -300,12 +346,25 @@ function buildSearchQueries(searchType, query) {
       const tagNoHash = query.startsWith('#') ? query.slice(1) : query;
       return [
         `"${tag}"`,
-        `${tag} press release`,
-        `${tagNoHash} press release news`,
+        `"${tagNoHash}"`,
+        tagNoHash,
       ];
     }
     
     case 'document': {
+      // Try AI entity extraction first
+      const aiEntities = await extractEntitiesWithAi(query);
+      if (aiEntities && aiEntities.length > 0) {
+        console.log('[Track] AI extracted entities for document search:', aiEntities);
+        const fullIntersection = aiEntities.map(e => `"${e}"`).join(' ');
+        const queries = [fullIntersection];
+        if (aiEntities.length >= 2) {
+          queries.push(`"${aiEntities[0]}" "${aiEntities[1]}"`);
+        }
+        queries.push(`"${aiEntities[0]}"`);
+        return queries;
+      }
+      // Fallback to old sentence match
       const phrases = extractKeyPhrases(query);
       return phrases.map(p => `"${p}"`).concat(phrases.map(p => `${p}`));
     }
@@ -443,14 +502,38 @@ export default async function handler(req, res) {
 
   try {
     // Step 1: Build search queries based on tracking targets
-    let queries = [];
+    let targetQueriesList = [];
     for (const target of activeTargets) {
-      const targetQueries = buildSearchQueries(target.type, target.query.trim());
-      queries.push(...targetQueries);
+      const tQueries = await buildSearchQueries(target.type, target.query.trim());
+      targetQueriesList.push({ type: target.type, original: target.query.trim(), queries: tQueries });
     }
+
+    // Generate combined queries
+    let queries = [];
+    if (targetQueriesList.length === 1) {
+      queries = targetQueriesList[0].queries;
+    } else {
+      // 1. Full AND intersection of all targets using their most specific exact match query (first query element)
+      const intersectionParts = targetQueriesList.map(t => t.queries[0]);
+      const fullIntersection = intersectionParts.join(' ');
+      queries.push(fullIntersection);
+
+      // 2. Pairwise intersections if there are 3 or more targets
+      if (targetQueriesList.length >= 3) {
+        for (let i = 0; i < targetQueriesList.length; i++) {
+          for (let j = i + 1; j < targetQueriesList.length; j++) {
+            queries.push(`${targetQueriesList[i].queries[0]} ${targetQueriesList[j].queries[0]}`);
+          }
+        }
+      }
+
+      // 3. Fallback to the individual queries of the first target (assuming first target is the main topic like Hashtag/Title)
+      queries.push(...targetQueriesList[0].queries);
+    }
+
     // Deduplicate query list
     queries = [...new Set(queries)];
-    console.log(`[Track] Targets:`, activeTargets, `Queries:`, queries);
+    console.log(`[Track] Targets:`, activeTargets, `Final Search Queries:`, queries);
 
     // Step 2: Try Google News RSS first
     console.log('[Track] Running Google News RSS search...');
@@ -510,9 +593,10 @@ export default async function handler(req, res) {
           let serperRawResults = [];
           
           for (const q of queries) {
+            const cleanQ = q.replace(/"/g, '');
             const [webResults, newsResults] = await Promise.all([
-              serperSearch(q, 15).catch(err => { console.error(`[Track] Serper Web error:`, err.message); return []; }),
-              serperNewsSearch(q, 15).catch(err => { console.error(`[Track] Serper News error:`, err.message); return []; }),
+              serperSearch(cleanQ, 15).catch(err => { console.error(`[Track] Serper Web error:`, err.message); return []; }),
+              serperNewsSearch(cleanQ, 15).catch(err => { console.error(`[Track] Serper News error:`, err.message); return []; }),
             ]);
             
             console.log(`[Track] Serper Query "${q}": ${webResults.length} web + ${newsResults.length} news results`);
