@@ -590,15 +590,23 @@ async function analyzeUrl(url, query) {
  */
 async function analyzeInBatches(urls, batchSize = 25, query, onProgress) {
   const results = [];
+  let completedCount = 0;
+  
   for (let i = 0; i < urls.length; i += batchSize) {
     const batch = urls.slice(i, i + batchSize);
     console.log(`[Track] Analyzing batch ${Math.floor(i/batchSize) + 1}: ${batch.map(r => r.link).join(', ')}`);
-    const batchResults = await Promise.all(batch.map(r => analyzeUrl(r.link, query)));
-    results.push(...batchResults);
     
-    if (onProgress) {
-      onProgress(Math.min(i + batchSize, urls.length), urls.length);
-    }
+    const batchPromises = batch.map(async (r) => {
+      const res = await analyzeUrl(r.link, query);
+      completedCount++;
+      if (onProgress) {
+        onProgress(completedCount, urls.length);
+      }
+      return res;
+    });
+    
+    const batchResults = await Promise.all(batchPromises);
+    results.push(...batchResults);
     
     if (i + batchSize < urls.length) {
       await new Promise(resolve => setTimeout(resolve, 200)); // Reduced delay for faster processing
@@ -686,12 +694,14 @@ export default async function handler(req, res) {
 
   // Set up SSE headers for real-time streaming
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no'); // Prevent Nginx buffering
+  res.flushHeaders(); // MUST call this to send headers immediately and open the stream!
   
   const sendProgress = (data) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
+    if (res.flush) res.flush(); // Flush compression buffers if they exist
   };
 
   const { searchType, query, targets } = req.body;

@@ -60,7 +60,6 @@ export default function Home() {
 
   const [tracking,   setTracking]   = useState(false);
   const [trackMsg,   setTrackMsg]   = useState('');
-  const [trackProgress, setTrackProgress] = useState(0);
   const [expandedGroups, setExpandedGroups] = useState({});
   const [activePage, setActivePage] = useState('dashboard');
 
@@ -204,7 +203,6 @@ export default function Home() {
 
     setTracking(true); setError(''); setSuccess('');
     setTrackMsg('Connecting to tracking server...');
-    setTrackProgress(5);
     
     try {
       const res = await fetch('/api/track', {
@@ -238,18 +236,7 @@ export default function Home() {
                 const parsed = JSON.parse(part.substring(6));
                 if (parsed.type === 'progress') {
                   setTrackMsg(parsed.message);
-                  const match = parsed.message.match(/(\d+) of (\d+) completed/);
-                  if (match) {
-                     const completed = parseInt(match[1]);
-                     const total = parseInt(match[2]);
-                     setTrackProgress(20 + Math.round((completed / total) * 80));
-                  } else if (parsed.message.includes('Searching')) {
-                     setTrackProgress(15);
-                  } else if (parsed.message.includes('Found')) {
-                     setTrackProgress(20);
-                  }
                 } else if (parsed.type === 'done') {
-                  setTrackProgress(100);
                   finalData = parsed;
                 } else if (parsed.type === 'error') {
                   throw new Error(parsed.error || 'Tracking failed');
@@ -298,7 +285,6 @@ export default function Home() {
     } finally {
       setTracking(false);
       setTrackMsg('');
-      setTrackProgress(0);
     }
   }
 
@@ -700,45 +686,30 @@ export default function Home() {
 
                 </div>
 
-                <div className="track-footer" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                <div className="track-footer">
                   {tracking && trackMsg && (
-                    <div style={{ width: '100%', marginBottom: '16px' }}>
-                      <div className="track-status" style={{ marginBottom: '10px' }}>
-                        <span className="spinner" style={{borderTopColor:'#10b981'}}/>
-                        <span style={{ color: '#10b981' }}>{trackMsg}</span>
-                      </div>
-                      <div className="progress-track" style={{ background: 'rgba(255,255,255,0.08)', height: '6px', width: '100%' }}>
-                        <div 
-                          className="progress-fill" 
-                          style={{ 
-                            width: `${trackProgress}%`, 
-                            background: 'linear-gradient(90deg, #10b981, #34d399)',
-                            animation: 'none',
-                            transition: 'width 0.4s ease-out'
-                          }} 
-                        />
-                      </div>
+                    <div className="track-status">
+                      <span className="spinner" style={{borderTopColor:'#a5b4fc'}}/>
+                      <span>{trackMsg}</span>
                     </div>
                   )}
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', width: '100%' }}>
-                    <button
-                      className={`action-btn${tracking?' loading':''}`}
-                      onClick={trackCoverage}
-                      disabled={tracking || !(
-                        (selectedTypes.includes('title') && titleQuery.trim()) ||
-                        (selectedTypes.includes('keywords') && keywordsQuery.trim()) ||
-                        (selectedTypes.includes('hashtag') && hashtagQuery.trim()) ||
-                        (selectedTypes.includes('document') && documentQuery.trim()) ||
-                        (selectedTypes.includes('image') && ocrResult)
-                      )}
-                      style={{background:'linear-gradient(135deg,#0ea5e9,#6366f1)'}}
-                    >
-                      {tracking
-                        ? <><span className="spinner"/>Searching…</>
-                        : <><span>◎</span>Find All Coverage</>
-                      }
-                    </button>
-                  </div>
+                  <button
+                    className={`action-btn${tracking?' loading':''}`}
+                    onClick={trackCoverage}
+                    disabled={tracking || !(
+                      (selectedTypes.includes('title') && titleQuery.trim()) ||
+                      (selectedTypes.includes('keywords') && keywordsQuery.trim()) ||
+                      (selectedTypes.includes('hashtag') && hashtagQuery.trim()) ||
+                      (selectedTypes.includes('document') && documentQuery.trim()) ||
+                      (selectedTypes.includes('image') && ocrResult)
+                    )}
+                    style={{background:'linear-gradient(135deg,#0ea5e9,#6366f1)'}}
+                  >
+                    {tracking
+                      ? <><span className="spinner"/>Searching…</>
+                      : <><span>◎</span>Find All Coverage</>
+                    }
+                  </button>
                 </div>
 
                 {error   && <div className="msg err">{error}</div>}
