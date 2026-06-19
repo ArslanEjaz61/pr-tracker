@@ -588,13 +588,17 @@ async function analyzeUrl(url, query) {
 /**
  * Analyze URLs in batches to avoid overwhelming n8n
  */
-async function analyzeInBatches(urls, batchSize = 25, query) {
+async function analyzeInBatches(urls, batchSize = 25, query, onProgress) {
   const results = [];
   for (let i = 0; i < urls.length; i += batchSize) {
     const batch = urls.slice(i, i + batchSize);
     console.log(`[Track] Analyzing batch ${Math.floor(i/batchSize) + 1}: ${batch.map(r => r.link).join(', ')}`);
     const batchResults = await Promise.all(batch.map(r => analyzeUrl(r.link, query)));
     results.push(...batchResults);
+    
+    if (onProgress) {
+      onProgress(Math.min(i + batchSize, urls.length), urls.length);
+    }
     
     if (i + batchSize < urls.length) {
       await new Promise(resolve => setTimeout(resolve, 200)); // Reduced delay for faster processing
@@ -680,6 +684,16 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  // Set up SSE headers for real-time streaming
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Prevent Nginx buffering
+  
+  const sendProgress = (data) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
   const { searchType, query, targets } = req.body;
 
   let activeTargets = [];
@@ -690,13 +704,15 @@ export default async function handler(req, res) {
   }
 
   if (activeTargets.length === 0) {
-    return res.status(400).json({ error: 'Missing searchType, query or targets' });
+    sendProgress({ type: 'error', error: 'Missing searchType, query or targets' });
+    return res.end();
   }
 
   // Combine query titles/keywords for campaign tracking label
   const combinedQuery = activeTargets.map(t => t.query.trim()).join(' | ');
 
   try {
+    sendProgress({ type: 'progress', message: 'Generating search queries...' });
     // Step 1: Build search queries based on tracking targets
     let targetQueriesList = [];
     for (const target of activeTargets) {
@@ -730,6 +746,8 @@ export default async function handler(req, res) {
     // Deduplicate query list
     queries = [...new Set(queries)];
     console.log(`[Track] Targets:`, activeTargets, `Final Search Queries:`, queries);
+
+    sendProgress({ type: 'progress', message: 'Searching Google News and Web in parallel...' });
 
     // Step 2: Run Google News RSS + Serper in PARALLEL (not fallback)
     console.log('[Track] Running Google News RSS + Serper searches in parallel...');
@@ -850,10 +868,13 @@ export default async function handler(req, res) {
     if (chatGptResults.length > 0) searchSourceUsed.push('ChatGPT AI');
     const searchSourceStr = searchSourceUsed.join(' + ') || 'Google News';
     
+    sendProgress({ type: 'progress', message: `Found ${unique.length} unique articles. Preparing for AI analysis...` });
+    
     console.log(`[Track] Combined: ${rssResults.length} RSS + ${serperResults.length} Serper + ${chatGptResults.length} ChatGPT = ${unique.length} unique results.`);
 
     if (unique.length === 0) {
-      return res.status(200).json({
+      sendProgress({
+        type: 'done',
         success: true,
         message: 'No coverage found for this search.',
         articlesFound: 0,
@@ -861,17 +882,22 @@ export default async function handler(req, res) {
         results: [],
         searchResults: [],
       });
+      return res.end();
     }
 
     // Step 3: Analyze ALL found URLs via n8n (UNLIMITED)
     const toAnalyze = unique;
     console.log(`[Track] Will analyze ALL ${toAnalyze.length} URLs via n8n...`);
 
-    const analyzed = await analyzeInBatches(toAnalyze, 25, combinedQuery);
+    const analyzed = await analyzeInBatches(toAnalyze, 25, combinedQuery, (completed, total) => {
+      sendProgress({ type: 'progress', message: `Analyzing articles with AI: ${completed} of ${total} completed...` });
+    });
+    
     const successful = analyzed.filter(a => a !== null).map(a => ({ ...a, search_query: combinedQuery }));
     console.log(`[Track] Successfully analyzed: ${successful.length}/${toAnalyze.length}`);
 
-    return res.status(200).json({
+    sendProgress({
+      type: 'done',
       success: true,
       message: `Found ${unique.length} publications via ${searchSourceStr}, analyzed ${successful.length} articles.`,
       articlesFound: unique.length,
@@ -884,12 +910,15 @@ export default async function handler(req, res) {
         snippet: r.snippet,
       })),
     });
+    return res.end();
 
   } catch (err) {
     console.error('[Track] Error:', err);
-    return res.status(500).json({
+    sendProgress({
+      type: 'error',
       error: 'Tracking failed',
       details: err.message,
     });
+    return res.end();
   }
 }

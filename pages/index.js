@@ -202,29 +202,55 @@ export default function Home() {
     if (targets.length === 0) return;
 
     setTracking(true); setError(''); setSuccess('');
-    const msgs = [
-      'Searching Google for coverage via Serper…',
-      'Scanning news outlets and websites…',
-      'Finding all publications…',
-      'Analyzing each article with AI…',
-      'Extracting sentiment & PR insights…',
-      'Saving results to dashboard…',
-    ];
-    let i = 0;
-    setTrackMsg(msgs[0]);
-    const interval = setInterval(() => { i = (i + 1) % msgs.length; setTrackMsg(msgs[i]); }, 5000);
+    setTrackMsg('Connecting to tracking server...');
+    
     try {
       const res = await fetch('/api/track', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targets }),
       });
-      clearInterval(interval);
+      
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || 'Tracking failed');
       }
-      const data = await res.json();
+      
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let doneReading = false;
+      let finalData = null;
+      let buffer = '';
+
+      while (!doneReading) {
+        const { value, done } = await reader.read();
+        doneReading = done;
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || ''; // Keep incomplete chunk in buffer
+          
+          for (const part of parts) {
+            if (part.startsWith('data: ')) {
+              try {
+                const parsed = JSON.parse(part.substring(6));
+                if (parsed.type === 'progress') {
+                  setTrackMsg(parsed.message);
+                } else if (parsed.type === 'done') {
+                  finalData = parsed;
+                } else if (parsed.type === 'error') {
+                  throw new Error(parsed.error || 'Tracking failed');
+                }
+              } catch (e) {
+                console.error("SSE parse error", e);
+              }
+            }
+          }
+        }
+      }
+
+      if (!finalData) throw new Error('Incomplete response from server');
+      const data = finalData;
       
       // Clear all active inputs
       setTitleQuery('');
@@ -258,7 +284,6 @@ export default function Home() {
       }
       setTimeout(() => setSuccess(''), 8000);
     } catch (err) {
-      clearInterval(interval);
       setTrackMsg('');
       setError(err.message || 'Tracking failed. Try different keywords or check the connection.');
     }
