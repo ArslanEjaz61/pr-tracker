@@ -60,6 +60,7 @@ export default function Home() {
 
   const [tracking,   setTracking]   = useState(false);
   const [trackMsg,   setTrackMsg]   = useState('');
+  const [trackProgress, setTrackProgress] = useState(0);
   const [expandedGroups, setExpandedGroups] = useState({});
   const [activePage, setActivePage] = useState('dashboard');
 
@@ -203,6 +204,7 @@ export default function Home() {
 
     setTracking(true); setError(''); setSuccess('');
     setTrackMsg('Connecting to tracking server...');
+    setTrackProgress(5);
     
     try {
       const res = await fetch('/api/track', {
@@ -236,7 +238,18 @@ export default function Home() {
                 const parsed = JSON.parse(part.substring(6));
                 if (parsed.type === 'progress') {
                   setTrackMsg(parsed.message);
+                  const match = parsed.message.match(/(\d+) of (\d+) completed/);
+                  if (match) {
+                     const completed = parseInt(match[1]);
+                     const total = parseInt(match[2]);
+                     setTrackProgress(20 + Math.round((completed / total) * 80));
+                  } else if (parsed.message.includes('Searching')) {
+                     setTrackProgress(15);
+                  } else if (parsed.message.includes('Found')) {
+                     setTrackProgress(20);
+                  }
                 } else if (parsed.type === 'done') {
+                  setTrackProgress(100);
                   finalData = parsed;
                 } else if (parsed.type === 'error') {
                   throw new Error(parsed.error || 'Tracking failed');
@@ -263,14 +276,11 @@ export default function Home() {
       setOcrError('');
       setTrackMsg('');
       
-      // Directly add the analyzed articles to the dashboard
-      // (since n8n GET endpoint only returns _ids, not full data)
       if (data.results && data.results.length > 0) {
         const newArticles = data.results
           .filter(a => a && a.url && a.publication)
           .map(a => ({ ...a, _id: a._id || Date.now().toString() + Math.random() }));
         setArticles(prev => {
-          // Merge: add new articles that don't already exist
           const existingUrls = new Set(prev.map(p => p.url));
           const unique = newArticles.filter(a => !existingUrls.has(a.url));
           return [...unique, ...prev];
@@ -284,10 +294,12 @@ export default function Home() {
       }
       setTimeout(() => setSuccess(''), 8000);
     } catch (err) {
+      setError(err.message || 'Tracking failed. Please check inputs and try again.');
+    } finally {
+      setTracking(false);
       setTrackMsg('');
-      setError(err.message || 'Tracking failed. Try different keywords or check the connection.');
+      setTrackProgress(0);
     }
-    finally { setTracking(false); }
   }
 
   async function deleteArticle(id) {
@@ -688,30 +700,45 @@ export default function Home() {
 
                 </div>
 
-                <div className="track-footer">
+                <div className="track-footer" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
                   {tracking && trackMsg && (
-                    <div className="track-status">
-                      <span className="spinner" style={{borderTopColor:'#a5b4fc'}}/>
-                      <span>{trackMsg}</span>
+                    <div style={{ width: '100%', marginBottom: '16px' }}>
+                      <div className="track-status" style={{ marginBottom: '10px' }}>
+                        <span className="spinner" style={{borderTopColor:'#10b981'}}/>
+                        <span style={{ color: '#10b981' }}>{trackMsg}</span>
+                      </div>
+                      <div className="progress-track" style={{ background: 'rgba(255,255,255,0.08)', height: '6px', width: '100%' }}>
+                        <div 
+                          className="progress-fill" 
+                          style={{ 
+                            width: `${trackProgress}%`, 
+                            background: 'linear-gradient(90deg, #10b981, #34d399)',
+                            animation: 'none',
+                            transition: 'width 0.4s ease-out'
+                          }} 
+                        />
+                      </div>
                     </div>
                   )}
-                  <button
-                    className={`action-btn${tracking?' loading':''}`}
-                    onClick={trackCoverage}
-                    disabled={tracking || !(
-                      (selectedTypes.includes('title') && titleQuery.trim()) ||
-                      (selectedTypes.includes('keywords') && keywordsQuery.trim()) ||
-                      (selectedTypes.includes('hashtag') && hashtagQuery.trim()) ||
-                      (selectedTypes.includes('document') && documentQuery.trim()) ||
-                      (selectedTypes.includes('image') && ocrResult)
-                    )}
-                    style={{background:'linear-gradient(135deg,#0ea5e9,#6366f1)'}}
-                  >
-                    {tracking
-                      ? <><span className="spinner"/>Searching…</>
-                      : <><span>◎</span>Find All Coverage</>
-                    }
-                  </button>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', width: '100%' }}>
+                    <button
+                      className={`action-btn${tracking?' loading':''}`}
+                      onClick={trackCoverage}
+                      disabled={tracking || !(
+                        (selectedTypes.includes('title') && titleQuery.trim()) ||
+                        (selectedTypes.includes('keywords') && keywordsQuery.trim()) ||
+                        (selectedTypes.includes('hashtag') && hashtagQuery.trim()) ||
+                        (selectedTypes.includes('document') && documentQuery.trim()) ||
+                        (selectedTypes.includes('image') && ocrResult)
+                      )}
+                      style={{background:'linear-gradient(135deg,#0ea5e9,#6366f1)'}}
+                    >
+                      {tracking
+                        ? <><span className="spinner"/>Searching…</>
+                        : <><span>◎</span>Find All Coverage</>
+                      }
+                    </button>
+                  </div>
                 </div>
 
                 {error   && <div className="msg err">{error}</div>}
