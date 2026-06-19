@@ -325,30 +325,145 @@ function extractKeyPhrases(text) {
 }
 
 /**
+ * Use AI to expand a hashtag into its full name and related search terms.
+ * e.g. "#60SIFF" -> { fullName: "60 Second International Film Festival", aliases: ["60SIFF", "60 sec film fest"], relatedTerms: ["short film festival Pakistan"] }
+ */
+async function expandHashtagWithAi(hashtag) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const payload = {
+      model: 'gpt-4o-mini',
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'user',
+          content: `You are a research assistant. Given the hashtag "${hashtag}", identify what it refers to and return a JSON object with:
+{
+  "fullName": "the full official name this hashtag represents",
+  "aliases": ["list of 3-5 alternative names, abbreviations, or spellings people use for this"],
+  "relatedTerms": ["2-3 broader contextual search terms that would find articles about this"]
+}
+
+For example:
+- "#60SIFF" -> {"fullName": "60 Second International Film Festival", "aliases": ["60SIFF", "60 Second Film Festival", "60 sec film fest", "60 Second Intl Film Festival"], "relatedTerms": ["short film festival", "60 second film competition"]}
+- "#UNFPA" -> {"fullName": "United Nations Population Fund", "aliases": ["UNFPA", "UN Population Fund"], "relatedTerms": ["UN agency reproductive health"]}
+- "#COP28" -> {"fullName": "28th Conference of the Parties", "aliases": ["COP28", "COP 28", "UN Climate Conference 2023"], "relatedTerms": ["climate summit Dubai", "UN climate change conference"]}
+
+If you cannot identify the hashtag, return: {"fullName": "", "aliases": [], "relatedTerms": []}`
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 300
+    };
+
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) throw new Error(`Status ${res.status}`);
+    const data = await res.json();
+    const content = JSON.parse(data.choices?.[0]?.message?.content || '{}');
+    console.log('[Track] AI hashtag expansion:', JSON.stringify(content));
+    return content;
+  } catch (err) {
+    console.error('[Track] AI hashtag expansion failed:', err.message);
+    return null;
+  }
+}
+
+/**
  * Build search queries based on tracking type
  */
 async function buildSearchQueries(searchType, query) {
   switch (searchType) {
-    case 'title':
-      return [
+    case 'title': {
+      const words = query.split(/\s+/).filter(w => w.length > 2);
+      const queries = [
         `"${query}"`,
         query,
       ];
+      // If title has 5+ words, also try first 5 and last 5 words
+      if (words.length >= 6) {
+        queries.push(words.slice(0, 5).join(' '));
+        queries.push(words.slice(-5).join(' '));
+      }
+      return queries;
+    }
     
-    case 'keywords':
-      return [
+    case 'keywords': {
+      const queries = [
         `"${query}"`,
         query,
       ];
+      // If multiple keywords (comma or space separated), search each individually too
+      const parts = query.split(/[,;]+/).map(s => s.trim()).filter(s => s.length > 2);
+      if (parts.length > 1) {
+        for (const p of parts) {
+          queries.push(`"${p}"`);
+          queries.push(p);
+        }
+      }
+      return queries;
+    }
     
     case 'hashtag': {
       const tag = query.startsWith('#') ? query : `#${query}`;
       const tagNoHash = query.startsWith('#') ? query.slice(1) : query;
-      return [
+      // Split camelCase/numbers: "60SIFF" -> "60 SIFF"
+      const expanded = tagNoHash.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/(\d+)([A-Za-z])/g, '$1 $2');
+      
+      // Start with basic queries
+      const queries = [
         `"${tag}"`,
         `"${tagNoHash}"`,
         tagNoHash,
+        `${tagNoHash} news`,
+        `${tagNoHash} article`,
+        `${tagNoHash} press release`,
+        `${tag} site:instagram.com OR site:facebook.com OR site:twitter.com OR site:x.com`,
       ];
+      
+      // Add expanded version if different from original
+      if (expanded !== tagNoHash) {
+        queries.push(`"${expanded}"`);
+        queries.push(expanded);
+      }
+      
+      // Use AI to get the full name and related terms
+      const aiExpansion = await expandHashtagWithAi(tag);
+      if (aiExpansion) {
+        // Add full official name (most important for finding articles)
+        if (aiExpansion.fullName) {
+          queries.push(`"${aiExpansion.fullName}"`);
+          queries.push(aiExpansion.fullName);
+          queries.push(`${aiExpansion.fullName} news`);
+          queries.push(`${aiExpansion.fullName} article`);
+        }
+        // Add aliases
+        if (aiExpansion.aliases && aiExpansion.aliases.length > 0) {
+          for (const alias of aiExpansion.aliases) {
+            if (alias.toLowerCase() !== tagNoHash.toLowerCase()) {
+              queries.push(`"${alias}"`);
+              queries.push(alias);
+            }
+          }
+        }
+        // Add related contextual terms
+        if (aiExpansion.relatedTerms && aiExpansion.relatedTerms.length > 0) {
+          for (const term of aiExpansion.relatedTerms) {
+            queries.push(term);
+          }
+        }
+      }
+      
+      return queries;
     }
     
     case 'document': {
@@ -361,7 +476,10 @@ async function buildSearchQueries(searchType, query) {
         if (aiEntities.length >= 2) {
           queries.push(`"${aiEntities[0]}" "${aiEntities[1]}"`);
         }
-        queries.push(`"${aiEntities[0]}"`);
+        // Also search each entity individually
+        for (const entity of aiEntities) {
+          queries.push(`"${entity}"`);
+        }
         return queries;
       }
       // Fallback to old sentence match
@@ -415,17 +533,23 @@ function deduplicateResults(results) {
 /**
  * Filter out irrelevant results (social media profiles, search engines, etc.)
  */
-function filterRelevantResults(results) {
-  const irrelevantDomains = [
-    'facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'tiktok.com',
-    'linkedin.com/in/', 'youtube.com/channel', 'pinterest.com',
-    'google.com', 'bing.com', 'yahoo.com',
+function filterRelevantResults(results, keepSocial = false) {
+  // Core domains to always exclude (search engines only)
+  const alwaysExclude = [
+    'google.com/search', 'bing.com/search', 'yahoo.com/search',
   ];
+  
+  // Social domains to optionally exclude
+  const socialDomains = [
+    'linkedin.com/in/', 'youtube.com/channel', 'pinterest.com',
+  ];
+  
+  const excludeList = keepSocial ? alwaysExclude : [...alwaysExclude, ...socialDomains];
   
   return results.filter(r => {
     if (!r.link) return false;
     const url = r.link.toLowerCase();
-    for (const d of irrelevantDomains) {
+    for (const d of excludeList) {
       if (url.includes(d)) return false;
     }
     return true;
@@ -464,7 +588,7 @@ async function analyzeUrl(url, query) {
 /**
  * Analyze URLs in batches to avoid overwhelming n8n
  */
-async function analyzeInBatches(urls, batchSize = 5, query) {
+async function analyzeInBatches(urls, batchSize = 25, query) {
   const results = [];
   for (let i = 0; i < urls.length; i += batchSize) {
     const batch = urls.slice(i, i + batchSize);
@@ -473,10 +597,82 @@ async function analyzeInBatches(urls, batchSize = 5, query) {
     results.push(...batchResults);
     
     if (i + batchSize < urls.length) {
-      await new Promise(resolve => setTimeout(resolve, 500)); // Reduced delay
+      await new Promise(resolve => setTimeout(resolve, 200)); // Reduced delay for faster processing
     }
   }
   return results;
+}
+
+/**
+ * Quick URL verification to filter out fake/hallucinated links
+ */
+async function verifyUrlExists(url) {
+  try {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(url, { 
+      method: 'HEAD', 
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    clearTimeout(id);
+    return res.ok || res.status === 403 || res.status === 401 || res.status === 405; 
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * Ask ChatGPT to find online articles
+ */
+async function searchWithChatGPT(query) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return [];
+
+  try {
+    const payload = {
+      model: 'gpt-4o',
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'user',
+          content: `Find real, authentic online articles, news, and press releases about "${query}". 
+Return ONLY a JSON object containing an array of objects under the key "articles". 
+Each object must have "title", "link", and "source".
+IMPORTANT: Do not make up or hallucinate URLs. Only provide URLs that you are highly confident actually exist. Provide as many as you can find.`
+        }
+      ],
+      temperature: 0.2,
+    };
+
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) throw new Error(`Status ${res.status}`);
+    const data = await res.json();
+    const content = JSON.parse(data.choices?.[0]?.message?.content || '{"articles":[]}');
+    
+    const articles = content.articles || [];
+    const validArticles = [];
+    
+    for (const a of articles) {
+      if (a.link && a.link.startsWith('http')) {
+        validArticles.push(a);
+      }
+    }
+    
+    console.log(`[Track] ChatGPT suggested ${validArticles.length} potential articles for "${query}"`);
+    return validArticles;
+  } catch (err) {
+    console.error('[Track] ChatGPT search failed:', err.message);
+    return [];
+  }
 }
 
 export default async function handler(req, res) {
@@ -535,29 +731,26 @@ export default async function handler(req, res) {
     queries = [...new Set(queries)];
     console.log(`[Track] Targets:`, activeTargets, `Final Search Queries:`, queries);
 
-    // Step 2: Try Google News RSS first
-    console.log('[Track] Running Google News RSS search...');
-    let rssRawResults = [];
-    for (const q of queries) {
-      const results = await googleNewsRssSearch(q);
-      rssRawResults.push(...results);
-    }
-
-    console.log(`[Track] Google News RSS returned ${rssRawResults.length} raw items.`);
+    // Step 2: Run Google News RSS + Serper in PARALLEL (not fallback)
+    console.log('[Track] Running Google News RSS + Serper searches in parallel...');
     
-    let unique = [];
-    let searchSourceUsed = 'google-news-rss';
-    
-    const uniqueRawRss = deduplicateRssRaw(rssRawResults);
-    
-    if (uniqueRawRss.length > 0) {
-      console.log(`[Track] Found ${uniqueRawRss.length} unique RSS items. Resolving URLs...`);
+    // --- RSS Search ---
+    const rssPromise = (async () => {
+      let rssRawResults = [];
+      for (const q of queries) {
+        const results = await googleNewsRssSearch(q);
+        rssRawResults.push(...results);
+      }
+      console.log(`[Track] Google News RSS returned ${rssRawResults.length} raw items.`);
+      const uniqueRawRss = deduplicateRssRaw(rssRawResults);
       
-      // Resolve top 20 RSS results in parallel with a slight stagger
-      const toResolve = uniqueRawRss.slice(0, 20);
+      if (uniqueRawRss.length === 0) return [];
+      
+      console.log(`[Track] Found ${uniqueRawRss.length} unique RSS items. Resolving URLs...`);
+      const toResolve = uniqueRawRss.slice(0, 50); // Resolve up to 50
       const resolved = await Promise.all(
         toResolve.map(async (item, index) => {
-          await new Promise(r => setTimeout(r, index * 50)); // stagger requests gently
+          await new Promise(r => setTimeout(r, index * 30)); // lighter stagger
           const realUrl = await resolveGoogleNewsUrl(item.link, 3, 6000);
           return {
             link: realUrl || item.link,
@@ -568,78 +761,96 @@ export default async function handler(req, res) {
           };
         })
       );
-      
-      const filtered = filterRelevantResults(resolved);
-      unique = deduplicateResults(filtered);
-      console.log(`[Track] After RSS resolution & filtering: ${unique.length} results.`);
-    }
-
-    // Step 3: Fallback to Serper if RSS has too few results
-    if (unique.length < 5) {
-      console.log(`[Track] RSS results (${unique.length}) below threshold. Falling back to Serper...`);
-      
+      return filterRelevantResults(resolved, true);
+    })();
+    
+    // --- Serper Search (runs in parallel, not as fallback) ---
+    const serperPromise = (async () => {
       if (!SERPER_API_KEY) {
-        if (unique.length > 0) {
-          console.warn('[Track] Serper API key is missing. Proceeding with RSS results only.');
-        } else {
-          return res.status(500).json({
-            error: 'Tracking failed',
-            details: 'Too few results found on Google News RSS, and SERPER_API_KEY is not configured for fallback search.',
-          });
-        }
-      } else {
-        try {
-          searchSourceUsed = 'serper-fallback';
-          let serperRawResults = [];
-          
-          for (const q of queries) {
-            const cleanQ = q.replace(/"/g, '');
-            const [webResults, newsResults] = await Promise.all([
-              serperSearch(cleanQ, 15).catch(err => { console.error(`[Track] Serper Web error:`, err.message); return []; }),
-              serperNewsSearch(cleanQ, 15).catch(err => { console.error(`[Track] Serper News error:`, err.message); return []; }),
-            ]);
-            
-            console.log(`[Track] Serper Query "${q}": ${webResults.length} web + ${newsResults.length} news results`);
-            
-            for (const r of webResults) {
-              let source = '';
-              try { source = new URL(r.link).hostname.replace('www.', ''); } catch {}
-              serperRawResults.push({
-                link: r.link,
-                title: r.title || '',
-                snippet: r.snippet || '',
-                source: source,
-                date: r.date || '',
-              });
-            }
-            
-            for (const r of newsResults) {
-              serperRawResults.push({
-                link: r.link,
-                title: r.title || '',
-                snippet: r.snippet || '',
-                source: r.source || '',
-                date: r.date || '',
-              });
-            }
-          }
-          
-          const filteredSerper = filterRelevantResults(serperRawResults);
-          const uniqueSerper = deduplicateResults(filteredSerper);
-          
-          // Merge Serper results with RSS results, prioritizing Serper results
-          const combined = [...uniqueSerper, ...unique];
-          unique = deduplicateResults(combined);
-          console.log(`[Track] After merging Serper fallback: ${unique.length} results.`);
-        } catch (serperErr) {
-          console.error('[Track] Serper fallback search failed:', serperErr.message);
-          // Do not fail the request if we already have some RSS results!
-          if (unique.length === 0) {
-            throw serperErr;
-          }
-        }
+        console.warn('[Track] SERPER_API_KEY not set — skipping Serper search.');
+        return [];
       }
-    }
+      try {
+        let serperRawResults = [];
+        
+        for (const q of queries) {
+          const cleanQ = q.replace(/"/g, '');
+          // Run web search, news search, and page 2 of web search in parallel
+          const [webResults, newsResults, webPage2] = await Promise.all([
+            serperSearch(cleanQ, 40).catch(err => { console.error(`[Track] Serper Web error:`, err.message); return []; }),
+            serperNewsSearch(cleanQ, 40).catch(err => { console.error(`[Track] Serper News error:`, err.message); return []; }),
+            serperSearch(cleanQ + ' site:*.com', 30).catch(() => []),
+          ]);
+          
+          console.log(`[Track] Serper Query "${cleanQ}": ${webResults.length} web + ${newsResults.length} news + ${webPage2.length} web2 results`);
+          
+          for (const r of [...webResults, ...webPage2]) {
+            let source = '';
+            try { source = new URL(r.link).hostname.replace('www.', ''); } catch {}
+            serperRawResults.push({
+              link: r.link,
+              title: r.title || '',
+              snippet: r.snippet || '',
+              source: source,
+              date: r.date || '',
+            });
+          }
+          
+          for (const r of newsResults) {
+            serperRawResults.push({
+              link: r.link,
+              title: r.title || '',
+              snippet: r.snippet || '',
+              source: r.source || '',
+              date: r.date || '',
+            });
+          }
+        }
+        
+        return filterRelevantResults(serperRawResults, true);
+      } catch (err) {
+        console.error('[Track] Serper search failed:', err.message);
+        return [];
+      }
+    })();
+    
+    // --- ChatGPT Search ---
+    const chatGptPromise = (async () => {
+      const gptResults = await searchWithChatGPT(combinedQuery);
+      
+      // Verify URLs concurrently to remove hallucinations
+      console.log(`[Track] Verifying ${gptResults.length} ChatGPT URLs to remove fake links...`);
+      const verificationResults = await Promise.all(gptResults.map(async (r) => {
+         const exists = await verifyUrlExists(r.link);
+         return { ...r, exists };
+      }));
+      
+      const verified = verificationResults.filter(r => r.exists);
+      console.log(`[Track] ChatGPT verified ${verified.length} authentic URLs out of ${gptResults.length}.`);
+      
+      return filterRelevantResults(verified.map(r => ({
+        link: r.link,
+        title: r.title || '',
+        snippet: 'Found via ChatGPT Search',
+        source: r.source || 'ChatGPT',
+        date: ''
+      })), true);
+    })();
+    
+    // Wait for all three sources to complete
+    const [rssResults, serperResults, chatGptResults] = await Promise.all([rssPromise, serperPromise, chatGptPromise]);
+    
+    // Merge all results: Serper first, then ChatGPT, then RSS
+    const allResults = [...serperResults, ...chatGptResults, ...rssResults];
+    let unique = deduplicateResults(allResults);
+    
+    let searchSourceUsed = [];
+    if (serperResults.length > 0) searchSourceUsed.push('Google Search');
+    if (rssResults.length > 0) searchSourceUsed.push('Google News');
+    if (chatGptResults.length > 0) searchSourceUsed.push('ChatGPT AI');
+    const searchSourceStr = searchSourceUsed.join(' + ') || 'Google News';
+    
+    console.log(`[Track] Combined: ${rssResults.length} RSS + ${serperResults.length} Serper + ${chatGptResults.length} ChatGPT = ${unique.length} unique results.`);
 
     if (unique.length === 0) {
       return res.status(200).json({
@@ -652,21 +863,21 @@ export default async function handler(req, res) {
       });
     }
 
-    // Step 4: Analyze each URL via n8n (limit to top 10 to avoid overloading)
-    const toAnalyze = unique.slice(0, 10);
-    console.log(`[Track] Will analyze ${toAnalyze.length} URLs via n8n...`);
+    // Step 3: Analyze ALL found URLs via n8n (UNLIMITED)
+    const toAnalyze = unique;
+    console.log(`[Track] Will analyze ALL ${toAnalyze.length} URLs via n8n...`);
 
-    const analyzed = await analyzeInBatches(toAnalyze, 5, combinedQuery);
+    const analyzed = await analyzeInBatches(toAnalyze, 25, combinedQuery);
     const successful = analyzed.filter(a => a !== null).map(a => ({ ...a, search_query: combinedQuery }));
     console.log(`[Track] Successfully analyzed: ${successful.length}/${toAnalyze.length}`);
 
     return res.status(200).json({
       success: true,
-      message: `Found ${unique.length} publications via ${searchSourceUsed}, analyzed ${successful.length} articles.`,
+      message: `Found ${unique.length} publications via ${searchSourceStr}, analyzed ${successful.length} articles.`,
       articlesFound: unique.length,
       articlesAnalyzed: successful.length,
       results: successful,
-      searchResults: unique.slice(0, 20).map(r => ({
+      searchResults: unique.slice(0, 200).map(r => ({
         title: r.title,
         link: r.link,
         source: r.source,

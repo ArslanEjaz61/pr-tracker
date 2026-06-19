@@ -344,7 +344,15 @@ a { text-decoration: none; color: inherit; }
 .filter-btn.active .f-count { background: rgba(99,102,241,0.2); color: var(--accent-bright); }
 .table-count { font-size: 12px; color: var(--text-dim); font-weight: 500; }
 
-.table-wrap { overflow-x: auto; }
+.table-wrap { 
+  overflow-x: auto; 
+  overflow-y: auto;
+  max-height: calc(100vh - 280px);
+}
+.table-wrap::-webkit-scrollbar { width: 8px; height: 8px; }
+.table-wrap::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1); border-radius: 4px; }
+.table-wrap::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 4px; }
+.table-wrap::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .th {
   padding: 13px 18px; text-align: left;
